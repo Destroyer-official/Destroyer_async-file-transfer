@@ -1,5 +1,8 @@
 
 
+
+
+
 import socket
 import os
 import struct
@@ -10,31 +13,35 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import filedialog, simpledialog, ttk
 import sys
+import threading
 import time
+from asyncio import gather
 import hashlib
 
 class FileTransfer:
-    def __init__(self, max_thread_workers=50, chunk_size=65536, max_retries=3, timeout=5):
+    def __init__(self, max_thread_workers=100, max_retries=3, timeout=5):
         # Initialize server and transfer settings
         self.server_ip = '0.0.0.0'
         self.server_port = 60000
         self.socket = None
         self.executor = ThreadPoolExecutor(max_workers=max_thread_workers)
+        self.chunk_size = None
         self.server_info_label = None
         self.server_info_window = None
         self.client_connected = False
         self.root = tk.Tk()
         self.root.withdraw()
         self.server_info_var = tk.StringVar()
-        self.chunk_size = chunk_size
         self.max_retries = max_retries
         self.timeout = timeout
         self.setup_logging()
 
     def setup_logging(self):
-        # Set up logging for error tracking
-        logging.basicConfig(filename='file_transfer.log', level=logging.ERROR)
-
+        logging.basicConfig(
+            filename='file_transfer.log',
+            level=logging.DEBUG,  # Set to DEBUG for more detailed logs
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
     async def start_server(self):
         # Set up and start the server
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -97,6 +104,8 @@ class FileTransfer:
         logging.info("Connected to the server.")
         try:
             await self.send_files(self.socket)
+            # Wait for 5 seconds to ensure receiver has successfully received the files
+            await asyncio.sleep(5)
         except Exception as e:
             print(f"Error during communication: {e}")
             logging.error(f"Error during communication: {e}")
@@ -106,12 +115,39 @@ class FileTransfer:
             logging.info("Connection closed.")
             self.exit_program()
 
+
+
+
+
+
+    def adjust_chunk_size(self, file_size):
+        if file_size < 1024 * 1024:  # For small files (< 1MB)
+            return 16384  # Use 16KB chunks
+        elif 1024 * 1024 <= file_size < 1024 * 1024 * 100:  # For medium files (1MB to 100MB)
+            return 32768  # Use 32KB chunks (adjust as needed)
+        elif 1024 * 1024 * 100 <= file_size < 1024 * 1024 * 1024 * 5:  # For large files (100MB to 5GB)
+            return 65536  # Use 64KB chunks (adjust as needed)
+        else:  # For extremely large files (> 5GB)
+            return 131072  # Use 128KB chunks
+
+
+
+    # Update to calculate_checksum method to use multiple threads
     def calculate_checksum(self, file_path):
+        def read_chunks(file, chunk_size):
+            while True:
+                chunk = file.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+    
         hash_md5 = hashlib.md5()
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(self.chunk_size), b""):
-                hash_md5.update(chunk)
+            with ThreadPoolExecutor() as executor:
+                for chunk in executor.map(lambda x: x, read_chunks(f, self.chunk_size)):
+                    hash_md5.update(chunk)
         return hash_md5.digest()
+    
 
     async def send_files(self, sock):
         choice = await self.prompt_file_or_folder()
@@ -126,11 +162,14 @@ class FileTransfer:
                     await self.send_file(sock, path, os.path.dirname(path))
                 elif os.path.isdir(path):
                     await self.send_folder(sock, path)
-                await asyncio.sleep(0.01)  # Ensure smooth operation with a slight delay
+                await asyncio.sleep(1)  # 20 ms delay between sending files/folders
+
+
 
     async def send_file(self, sock, file_path, root):
         try:
             file_size = os.path.getsize(file_path)  # Pre-calculate file size
+            self.chunk_size = self.adjust_chunk_size(file_size) 
             relative_path = os.path.relpath(file_path, root).encode('UTF-8')
             checksum = self.calculate_checksum(file_path)
             print(f"Sending file: {file_path}, size: {file_size} bytes")
@@ -149,7 +188,7 @@ class FileTransfer:
             async with aiofiles.open(file_path, 'rb') as f:
                 sent_size = 0
                 last_update_time = 0
-                update_interval = 0.5  # Update progress every 0.5 seconds
+                update_interval = 0.3  # Update progress every 0.3 seconds
                 while sent_size < file_size:
                     chunk = await f.read(self.chunk_size)
                     await self.send_with_retry(sock, chunk)
@@ -158,6 +197,7 @@ class FileTransfer:
                     if current_time - last_update_time > update_interval:
                         self.update_progress(progress_bar, percentage_label, sent_size, file_size)
                         last_update_time = current_time
+
             print(f"\nFile {relative_path.decode('UTF-8')} sent successfully.")
             logging.info(f"File {relative_path.decode('UTF-8')} sent successfully.")
             progress_window.destroy()
@@ -166,10 +206,11 @@ class FileTransfer:
             logging.error(f"Error sending file {file_path}: {e}")
 
 
+
     async def send_with_retry(self, sock, data):
-        # Send data with retry mechanism for reliability
         retries = 0
         backoff = 1
+        max_backoff = 8  # Maximum backoff time in seconds
         while retries < self.max_retries:
             try:
                 await asyncio.get_event_loop().sock_sendall(sock, data)
@@ -184,10 +225,11 @@ class FileTransfer:
                 logging.warning("Timeout, retrying...")
             retries += 1
             await asyncio.sleep(backoff)
-            backoff *= 2
+            backoff = min(backoff * 2, max_backoff)
         print("Failed to send data after retries.")
         logging.error("Failed to send data after retries.")
 
+    
 
     async def send_folder(self, sock, folder_path):
         # Send a folder and its contents to the server
@@ -200,13 +242,13 @@ class FileTransfer:
                 for file in files:
                     file_path = os.path.join(root_dir, file)
                     await self.send_file(sock, file_path, folder_path)
-                    await asyncio.sleep(0.1)  # 100 ms delay between sending files
+                    await asyncio.sleep(0.3)  # 300 ms delay between sending files
         except Exception as e:
             print(f"Error sending folder {folder_path}: {e}")
             logging.error(f"Error sending folder {folder_path}: {e}")
 
     async def receive_files_or_folders(self, sock):
-        # Receive files or folders from the server
+        self.failed_files = []  # Initialize list to track failed files
         try:
             while True:
                 data_type = await asyncio.get_event_loop().sock_recv(sock, 1)
@@ -216,20 +258,39 @@ class FileTransfer:
                     await self.receive_file(sock)
                 elif data_type.decode() == 'D':
                     await self.receive_folder(sock)
+            
+            # After all files have been processed, request retransmission of failed files
+            if self.failed_files:
+                print("Requesting retransmission of corrupted files...")
+                logging.info("Requesting retransmission of corrupted files...")
+                await self.request_retransmission(sock, self.failed_files)
         except Exception as e:
             print(f"Error receiving files or folders: {e}")
             logging.error(f"Error receiving files or folders: {e}")
+    
+    async def request_retransmission(self, sock, files):
+        # Send the list of failed files to the client for retransmission
+        await asyncio.get_event_loop().sock_sendall(sock, b'R')
+        await asyncio.get_event_loop().sock_sendall(sock, struct.pack('>I', len(files)))
+        for file in files:
+            encoded_file = file.encode('UTF-8')
+            await asyncio.get_event_loop().sock_sendall(sock, struct.pack('>I', len(encoded_file)))
+            await asyncio.get_event_loop().sock_sendall(sock, encoded_file)
+    
 
+    
     async def receive_file(self, sock):
         try:
             file_name_length = struct.unpack('>I', await asyncio.get_event_loop().sock_recv(sock, 4))[0]
             file_name = await asyncio.get_event_loop().sock_recv(sock, file_name_length)
             file_name = file_name.decode('UTF-8', errors='replace')
             file_size = struct.unpack('>Q', await asyncio.get_event_loop().sock_recv(sock, 8))[0]
+            self.chunk_size = self.adjust_chunk_size(file_size)
             checksum = await asyncio.get_event_loop().sock_recv(sock, 16)
             print(f"Receiving file: {file_name}, size: {file_size} bytes")
             print(f"Expected MD5 checksum: {checksum.hex()}")
             logging.info(f"Receiving file: {file_name}, size: {file_size} bytes, expected MD5 checksum: {checksum.hex()}")
+
             received_dir = 'received'
             os.makedirs(received_dir, exist_ok=True)
             file_name = os.path.join(received_dir, self.get_unique_filename(file_name))
@@ -242,7 +303,7 @@ class FileTransfer:
             async with aiofiles.open(file_name, 'wb') as f:
                 received_size = 0
                 last_update_time = 0
-                update_interval = 0.2  # Update progress every 0.2seconds
+                update_interval = 0.3  # Update progress every 0.3 seconds
                 while received_size < file_size:
                     chunk = await self.receive_with_retry(sock)
                     await f.write(chunk)
@@ -259,19 +320,33 @@ class FileTransfer:
             else:
                 print(f"File {file_name} is corrupted. Checksum mismatch.")
                 logging.error(f"File {file_name} is corrupted. Checksum mismatch.")
+                self.failed_files.append(file_name)  # Track failed files
             print(f"Received MD5 checksum: {received_checksum.hex()}")
-            logging.error(f"Checksum mismatch for file {file_name}.")
             progress_window.destroy()
         except Exception as e:
             print(f"Error receiving file: {e}")
             logging.error(f"Error receiving file: {e}")
+            self.failed_files.append(file_name)  # Track failed files in case of error
+
+
+
+
+
+
+    def show_error_message(self, message):
+        # Show an error message to the user
+        error_window = tk.Tk()
+        error_window.title("Error")
+        tk.Label(error_window, text=message).pack(pady=10, padx=10)
+        tk.Button(error_window, text="Close", command=error_window.destroy).pack(pady=5)
+        error_window.mainloop()
 
 
 
     async def receive_with_retry(self, sock):
-        # Receive data with retry mechanism for reliability
         retries = 0
         backoff = 1
+        max_backoff = 8  # Maximum backoff time in seconds
         while retries < self.max_retries:
             try:
                 chunk = await asyncio.wait_for(asyncio.get_event_loop().sock_recv(sock, self.chunk_size), timeout=self.timeout)
@@ -282,9 +357,10 @@ class FileTransfer:
                 logging.warning("Timeout, retrying...")
             retries += 1
             await asyncio.sleep(backoff)
-            backoff *= 2
+            backoff = min(backoff * 2, max_backoff)
         logging.error("Failed to receive data after retries.")
         raise Exception("Failed to receive data.")
+
 
 
     async def receive_folder(self, sock):
@@ -324,7 +400,7 @@ class FileTransfer:
     def create_progress_window(self, total_size, title):
         # Create a new progress window with the given title
         progress_window = tk.Tk()
-        progress_window.title( title)
+        progress_window.title(title)
 
         # Progress bar to show the transfer progress
         progress_bar = ttk.Progressbar(progress_window, maximum=total_size, length=300, mode='determinate')
@@ -337,7 +413,11 @@ class FileTransfer:
         # Close button for the progress window
         tk.Button(progress_window, text="Close", command=progress_window.destroy).pack(pady=5)
 
+        # Start a separate thread for GUI updates
+        threading.Thread(args=(progress_bar, percentage_label, progress_window)).start()
+
         return progress_bar, percentage_label, progress_window
+
 
 
     def update_progress(self, progress_bar, percentage_label, transferred_size, total_size):
@@ -438,3 +518,8 @@ class FileTransfer:
 
 if __name__ == "__main__":
     FileTransfer.main()
+
+
+
+
+
