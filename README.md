@@ -11,18 +11,20 @@
 
 ## ✨ Features
 
-- **Asynchronous Transfer**: Utilizes `asyncio` for efficient, non-blocking file transfers.
-- **Thread Pool Executor**: Manages multiple threads for concurrent file operations.
-- **🖥️ Tkinter GUI**: Provides a user-friendly interface for selecting files/folders and monitoring transfer progress.
-- **🔒 Checksum Verification**: Ensures data integrity by verifying MD5 checksums.
-- **🔄 Retry Mechanism**: Implements retries with exponential backoff for reliable data transfer.
-- **📊 Progress Tracking**: Displays real-time progress of file transfer operations.
+- **🚀 Asynchronous Transfers**: Powered by `asyncio`, our application ensures non-blocking, fast, and efficient file transfers.
+- **💼 Multi-threaded Operations**: A thread pool executor manages concurrent file operations, boosting performance.
+- **🖥️ User-Friendly GUI**: A Tkinter-based interface simplifies file selection and transfer monitoring.
+- **🔒 Secure Transfers**: MD5 checksum verification guarantees data integrity.
+- **🔄 Resilient Transfers**: A retry mechanism with exponential backoff ensures reliable data delivery.
+- **📊 Real-Time Progress**: Stay informed with real-time progress updates on file transfers.
 
 ## 📋 Requirements
 
 - Python 3.6 or higher
 - `aiofiles` library for asynchronous file operations
 - `Tkinter` for GUI components
+
+
 
 ## ⚙️ Installation
 
@@ -36,7 +38,7 @@
     pip install aiofiles
     ```
 
-## 🚀 Usage
+## 🚀 Getting Started
 
 ### Running the Application
 
