@@ -1,3 +1,4 @@
+
 import zipfile
 import tempfile 
 import socket
@@ -155,7 +156,6 @@ class FileTransfer:
         try:
             await self.send_files(self.socket)
             print("All transfers completed successfully.")  
-            # Wait for 5 seconds to ensure receiver has successfully received the files
             await asyncio.sleep(1)
         except Exception as e:
             print(f"Error during communication: {e}")
@@ -202,19 +202,26 @@ class FileTransfer:
             paths = [filedialog.askdirectory()]
 
         if paths:
+            # file_counter = 0  # Counter to keep track of files sent in each batch
             for path in paths:
                 if os.path.isfile(path):
                     await self.send_file(sock, path, os.path.dirname(path))
                 elif os.path.isdir(path):
                     await self.send_folder(sock, path)
-                await asyncio.sleep(.1)  # 100 ms delay between sending files/folders
+                # file_counter += 1
+
+                # if file_counter % 5 == 0:
+                #     logging.info("Batch complete. Pausing for 1 seconds...")
+                #     await asyncio.sleep(.5) 
+
+                # await asyncio.sleep(.5)  # 50 ms delay between sending files/folders
+                
 
     async def send_file(self, sock, file_path, root, checksum=None):
         try:
-            file_size = os.path.getsize(file_path)  # Pre-calculate file size
+            file_size = os.path.getsize(file_path)
             self.chunk_size = self.adjust_chunk_size(file_size)
-            # Correctly generate the relative path
-            relative_path = os.path.relpath(file_path, root).encode('UTF-8')
+            relative_path = os.path.relpath(file_path, root).encode('latin1', errors='surrogateescape')
 
             if checksum is None:
                 checksum = self.calculate_checksum(file_path)
@@ -230,29 +237,43 @@ class FileTransfer:
             await asyncio.get_event_loop().sock_sendall(sock, struct.pack('>Q', file_size))
             await asyncio.get_event_loop().sock_sendall(sock, checksum)
 
-            progress_bar, percentage_label, progress_window = self.create_progress_window(file_size, f"Sending {relative_path.decode('UTF-8')}")
+            progress_bar, percentage_label, progress_window = self.create_progress_window(file_size, f"Sending {relative_path.decode('latin1', errors='surrogateescape')}")
+            sent_size = 0
+                                # last_update_time = 0
+                    # update_interval = 0.3  # Update progress every 0.3 seconds
+                   
 
-            async with aiofiles.open(file_path, 'rb') as f:
-                sent_size = 0
-                last_update_time = 0
-                update_interval = 0.3  # Update progress every 0.3 seconds
-                while sent_size < file_size:
-                    chunk = await f.read(self.chunk_size)
-                    await self.send_with_retry(sock, chunk)
-                    sent_size += len(chunk)
-                    current_time = time.time()
-                    if current_time - last_update_time > update_interval:
+            try:
+                async with aiofiles.open(file_path, 'rb') as f:
+                    while sent_size < file_size:
+                        chunk = await f.read(self.chunk_size)
+                        if not chunk:
+                            break  # End of file
+                        await self.send_with_retry(sock, chunk)
+                        sent_size += len(chunk)
+                         # current_time = time.time()
+                        # if current_time - last_update_time > update_interval:
+                       
+
+                        # Update progress
                         self.update_progress(progress_bar, percentage_label, sent_size, file_size)
-                        last_update_time = current_time
-
-            print(f"File {relative_path.decode('UTF-8')} sent successfully.\n")
-            logging.info(f"File {relative_path.decode('UTF-8')} sent successfully.")
-            progress_window.destroy()
+                        # last_update_time = current_time  
+                # After sending the entire file, wait for the final ACK
+                response = await asyncio.wait_for(asyncio.get_event_loop().sock_recv(sock, 1), timeout=self.timeout)
+                if response == b'A':
+                    print(f"File {relative_path.decode('latin1', errors='surrogateescape')} sent successfully.")
+                else:
+                    print(f"Error in sending {relative_path.decode('latin1', errors='surrogateescape')}: {response}")
+                    self.failed_files.append(file_path)
+            except Exception as e:
+                print(f"Error during sending: {e}")
+                logging.error(f"Error during sending: {e}")
+                self.failed_files.append(file_path)
+            finally:
+                progress_window.destroy()
         except Exception as e:
-            print(f"\nError sending file {file_path}: {e}")
+            print(f"Error sending file {file_path}: {e}")
             logging.error(f"Error sending file {file_path}: {e}")
-
-    
 
     async def send_with_retry(self, sock, data):
         retries = 0
@@ -261,27 +282,44 @@ class FileTransfer:
         while retries < self.max_retries:
             try:
                 await asyncio.get_event_loop().sock_sendall(sock, data)
+                return  # No need to wait for ACK after each chunk
+            except Exception as e:
+                    print(f"faild to receive {e}")
+                    logging.warning(f"faild to receive {e}")
+            try:
                 response = await asyncio.wait_for(asyncio.get_event_loop().sock_recv(sock, 1), timeout=self.timeout)
+                
                 if response == b'A':  # ACK received
-                    return
+                    print(f' FILE sent successfully')
+                    # return
                 elif response == b'C':  # ACM (Acknowledgment Checksum Mismatch) received
                     print("Checksum mismatch detected. Will retry after completing initial transfer.")
                     logging.warning("Checksum mismatch detected. Will retry after completing initial transfer.")
                     self.failed_files.append(data)
-                    return
+                    # return
+                elif response == b'd':  # ACM (Acknowledgment Checksum Mismatch) received
+                    print("utf decode error detected. Will retry after completing initial transfer.")
+                    logging.warning("utf decode error detected. Will retry after completing initial transfer.")
+                    self.failed_files.append(data)
+                    # return
+                elif response == b'e':  # ACM (Acknowledgment Checksum Mismatch) received
+                    print("decode other error detected. Will retry after completing initial transfer.")
+                    logging.warning("decode other error detected. Will retry after completing initial transfer.")
+                    self.failed_files.append(data)
+                    # return
                 else:
                     print("Invalid response, retrying...")
-                    logging.warning("Invalid response, retrying...")
-            except asyncio.TimeoutError:
-                print("Timeout, retrying...")
-                logging.warning("Timeout, retrying...")
-            retries += 1
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
+            except Exception as e:
+                print(f"Failed to send chunk: {e}")
+                logging.warning(f"Failed to send chunk: {e}")
+                retries += 1
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
         print("Failed to send data after retries.")
         logging.error("Failed to send data after retries.")
 
 
+ 
 
     async def send_folder(self, sock, folder_path):
         try:
@@ -329,6 +367,7 @@ class FileTransfer:
                 await self.request_retransmission(sock, self.failed_files)
         except Exception as e:
             logging.error(f"Error receiving files or folders: {e}")
+            pass
             exit()
 
     
@@ -337,7 +376,7 @@ class FileTransfer:
         await asyncio.get_event_loop().sock_sendall(sock, b'R')
         await asyncio.get_event_loop().sock_sendall(sock, struct.pack('>I', len(files)))
         for file in files:
-            encoded_file = file.encode('UTF-8')
+            encoded_file = file.encode('latin1', errors='surrogateescape')
             await asyncio.get_event_loop().sock_sendall(sock, struct.pack('>I', len(encoded_file)))
             await asyncio.get_event_loop().sock_sendall(sock, encoded_file)
 
@@ -349,14 +388,25 @@ class FileTransfer:
                 await self.send_with_retry(sock, file_data)
             print("Retransmission complete.")
             logging.info("Retransmission complete.")
+
+
+            
     async def receive_file(self, sock):
+        file_name = None  # Initialize file_name to None to avoid reference errors
         try:
             file_name_length = struct.unpack('>I', await asyncio.get_event_loop().sock_recv(sock, 4))[0]
             file_name = await asyncio.get_event_loop().sock_recv(sock, file_name_length)
-            file_name = file_name.decode('UTF-8', errors='replace')
+            try:
+                file_name = file_name.decode('latin1', errors='surrogateescape') 
+            except Exception as e:
+                await asyncio.get_event_loop().sock_sendall(sock, b'd')  # Send NACK
+                self.failed_files.append(unique_file_name)  # Track failed files
+                pass
+
             file_size = struct.unpack('>Q', await asyncio.get_event_loop().sock_recv(sock, 8))[0]
             self.chunk_size = self.adjust_chunk_size(file_size)
             checksum = await asyncio.get_event_loop().sock_recv(sock, 16)
+
             print(f"\nReceiving file: {file_name}, size: {file_size} bytes")
             print(f"Expected MD5 checksum: {checksum.hex()}")
             logging.info(f"Receiving file: {file_name}, size: {file_size} bytes, expected MD5 checksum: {checksum.hex()}")
@@ -373,49 +423,60 @@ class FileTransfer:
 
             progress_bar, percentage_label, progress_window = self.create_progress_window(file_size, f"Receiving {base_file_name}")
 
-            async with aiofiles.open(unique_file_name, 'wb') as f:
-                received_size = 0
-                last_update_time = 0
-                update_interval = 0.3  # Update progress every 0.3 seconds
-                while received_size < file_size:
-                    chunk = await self.receive_with_retry(sock)
-                    await f.write(chunk)
-                    received_size += len(chunk)
-                    current_time = time.time()
-                    if current_time - last_update_time > update_interval:
+            try:
+                async with aiofiles.open(unique_file_name, 'wb') as f:
+                    received_size = 0
+                    # last_update_time = 0
+                    # update_interval = 0.3  # Update progress every 0.3 seconds
+                    while received_size < file_size:
+                        chunk = await self.receive_with_retry(sock)
+                        if not chunk:
+                            break  # End of transmission
+                        await f.write(chunk)
+                        received_size += len(chunk)
+                        # current_time = time.time()
+                        # if current_time - last_update_time > update_interval:
                         self.update_progress(progress_bar, percentage_label, received_size, file_size)
-                        last_update_time = current_time
+                        # last_update_time = current_time
+            
 
-            received_checksum = self.calculate_checksum(unique_file_name)
-            if received_checksum == checksum:
-                print(f"File received successfully and checksum verified.")
-                logging.info(f"File {unique_file_name} received successfully and checksum matched.")
-                await asyncio.get_event_loop().sock_sendall(sock, b'A')  # Send ACK
+                received_checksum = self.calculate_checksum(unique_file_name)
+                if received_checksum == checksum:
+                    print(f"File received successfully and checksum verified.")
+                    logging.info(f"File {unique_file_name} received successfully and checksum matched.")
+                    # await asyncio.sleep(.5)
+                    await asyncio.get_event_loop().sock_sendall(sock, b'A')  # Send ACK
 
-                # If the received file is a ZIP archive, extract it
-                if zipfile.is_zipfile(unique_file_name):
-                    with zipfile.ZipFile(unique_file_name, 'r') as zip_ref:
-                        original_folder_name = zip_ref.namelist()[0].split('/')[0]  # Extract original folder name
-                        parent_dir = "received"
-                        unique_folder_name = self.get_unique_foldername(parent_dir, original_folder_name)
-                        zip_ref.extractall(unique_folder_name)
-                        print(f"Extracted ZIP file to {unique_folder_name}.")
-                        logging.info(f"Extracted ZIP file to {unique_folder_name}.")
-                    os.remove(unique_file_name)  # Delete the ZIP file after extraction
+                    # If the received file is a ZIP archive, extract it
+                    if zipfile.is_zipfile(unique_file_name):
+                        with zipfile.ZipFile(unique_file_name, 'r') as zip_ref:
+                            original_folder_name = zip_ref.namelist()[0].split('/')[0]  # Extract original folder name
+                            parent_dir = "received"
+                            unique_folder_name = self.get_unique_foldername(parent_dir, original_folder_name)
+                            zip_ref.extractall(unique_folder_name)
+                            print(f"Extracted ZIP file to {unique_folder_name}.")
+                            logging.info(f"Extracted ZIP file to {unique_folder_name}.")
+                        os.remove(unique_file_name)  # Delete the ZIP file after extraction
 
-            else:
-                print(f"File {unique_file_name} is corrupted. Checksum mismatch.")
-                logging.error(f"File {unique_file_name} is corrupted. Checksum mismatch.")
-                await asyncio.sleep(0.3)  # Give the loop time
-                await asyncio.get_event_loop().sock_sendall(sock, b'C')  # Send NACK
-                self.failed_files.append(unique_file_name)  # Track failed files
-            print(f"Received MD5 checksum: {received_checksum.hex()}\n")
-            progress_window.destroy()
+                else:
+                    print(f"File {unique_file_name} is corrupted. Checksum mismatch.")
+                    logging.error(f"File {unique_file_name} is corrupted. Checksum mismatch.")
+                    # await asyncio.sleep(0.3)  # Give the loop time
+                    await asyncio.get_event_loop().sock_sendall(sock, b'C')  # Send NACK
+                    self.failed_files.append(unique_file_name)  # Track failed files
+                    pass
+            except Exception as e:
+                await asyncio.get_event_loop().sock_sendall(sock, b'e')
+                self.failed_files.append(unique_file_name)
+            finally:
+                print(f"Received MD5 checksum: {received_checksum.hex()}\n")
+                progress_window.destroy()
         except Exception as e:
             print(f"Error receiving file: {file_name}, Error: {e}")
             logging.error(f"Error receiving file: {file_name}, Error: {e}")
             self.failed_files.append(file_name)
-            await asyncio.get_event_loop().sock_sendall(sock, b'C')  # Send NACK in case of error
+            await asyncio.get_event_loop().sock_sendall(sock, b'e')  
+
 
 
 
@@ -434,7 +495,8 @@ class FileTransfer:
         while retries < self.max_retries:
             try:
                 chunk = await asyncio.wait_for(asyncio.get_event_loop().sock_recv(sock, self.chunk_size), timeout=self.timeout)
-                await asyncio.get_event_loop().sock_sendall(sock, b'A')
+                # if chunk:  # If chunk received successfully, send ACK
+                    # await asyncio.get_event_loop().sock_sendall(sock, b'A')
                 return chunk
             except asyncio.TimeoutError:
                 print("Timeout, retrying...")
@@ -509,12 +571,15 @@ class FileTransfer:
         return progress_bar, percentage_label, progress_window
 
     def update_progress(self, progress_bar, percentage_label, transferred_size, total_size):
-        # Update the progress bar and percentage label during file transfer
-        progress_bar['value'] = transferred_size
         percentage = (transferred_size / total_size) * 100
-        percentage_label['text'] = f"{int(percentage)}%"
-        progress_bar.update()
-        percentage_label.update()
+        # Update the progress bar and percentage label during file transfer
+        
+        # Update the progress bar and percentage label only when the percentage crosses a 10% threshold
+        if int(percentage) % 10 == 0:
+            progress_bar['value'] = transferred_size
+            percentage_label['text'] = f"{int(percentage)}%"
+            progress_bar.update()
+            percentage_label.update()
     def update_gui_client_info(self, client_address):
         # Update the GUI with client information
         if self.server_info_window:
