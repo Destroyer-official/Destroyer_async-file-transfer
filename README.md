@@ -7,6 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-3.6%2B-blue.svg)](https://www.python.org/downloads/)
 
 </div>
+### 🌟 Overview
 `Destroyer_async-file-transfer` is an asynchronous file transfer application written in Python. It allows users to transfer files and folders between a server and clients using a graphical user interface (GUI) built with Tkinter and async IO operations for efficient performance.
 
 ## ✨ Features
@@ -31,19 +32,22 @@
 1. Clone the repository:
     ```bash
     git clone https://github.com/Destroyer-official/Destroyer_async-file-transfer.git
-    cd Destroyer_async-file-transfer
     ```
-2. Install the required dependencies:
+
+2. Navigate to the repository directory:
+     ```bash
+    cd Destroyer_async-file-transfer
+    ``` 
+3. Install the required dependencies:
     ```bash
-    pip install aiofiles
+    pip install -r requirements.txt
     ```
 
 ## 🚀 Getting Started
 
 ### Running the Application
-
-1. Navigate to the repository directory.
-2. Execute the script:
+ 
+1. Execute the script:
     ```bash
     python file_transfer.py
     ```
@@ -71,7 +75,7 @@
 - The application logs errors and significant events to `file_transfer.log`.
 - Check the log file for detailed information on any issues encountered during file transfers.
 
-## 🔍 Code Overview
+## 🔍 Code Overview 📚
 
 ### `FileTransfer` Class
 
@@ -107,8 +111,16 @@
 - **Main Menu**: Provides options to either start the server (receive mode) or connect to a server (send mode).
 - **Tkinter GUI**: Handles user interactions and displays progress during file transfers.
 
+---
+
+
+### 🤝 Contributing
+
+🤝 Contributions are welcome! For suggestions, enhancements, or issues, feel free to create a pull request or submit an issue in the repository.
+
 ## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
-
+<div align="center">
 ---
+</div>
